@@ -1,0 +1,28 @@
+{
+  "shiftguard_binary": {
+    "test_accuracy": 0.819,
+    "best_val_accuracy": 0.814,
+    "total_params": 1901579
+  },
+  "simple_cnn_baseline": {
+    "test_accuracy": 0.9545,
+    "best_val_accuracy": 0.964,
+    "total_params": 2488066
+  },
+  "training_config": {
+    "checkpoint_out": "shiftguard_cifar10_exp1_lr1e4.pth",
+    "lora_rank": 8,
+    "epochs_stage1": 0,
+    "epochs_stage2": 25,
+    "batch_size": 32,
+    "lr_head": 0.001,
+    "lr_finetune": 3e-05,
+    "weight_decay": 0.0001,
+    "patience": 6,
+    "seed": 42,
+    "train_baseline": false,
+    "train_baseline_only": true,
+    "eval_test": false
+  },
+  "note": "ShiftGuardBinary reuses MiniViT backbone + ShiftAnalyzer + Router + LoRA Adapters from the 3-class synthetic checkpoint, with the task head replaced by a fresh 2-class head.  SimpleCNN is trained from scratch under identical split and augmentation conditions."
+}

@@ -1,0 +1,30 @@
+======================================================================
+ShiftGuard CIFAR-10 Binary Evaluation Report
+======================================================================
+Checkpoint   : D:\FYP\ShiftGuard\shiftguard_cifar10_exp1_lr1e4.pth
+Val acc (selection criterion, NOT test): 81.40%
+
+Test accuracy        : 81.90%
+Macro precision      : 81.90%
+Macro recall         : 81.90%
+Macro F1-score       : 81.90%
+Mean max-conf        : 83.17%
+Inference ms/image   : 3.76
+Model parameters     : 1,901,579
+
+Per-class report:
+                  precision    recall  f1-score   support
+
+automobile (car)     0.8152    0.8250    0.8201      1000
+           truck     0.8229    0.8130    0.8179      1000
+
+        accuracy                         0.8190      2000
+       macro avg     0.8190    0.8190    0.8190      2000
+    weighted avg     0.8190    0.8190    0.8190      2000
+
+Confusion matrix:
+  [[825 175]
+ [187 813]]
+
+Target assessment: TARGET MET (>=75%)
+======================================================================

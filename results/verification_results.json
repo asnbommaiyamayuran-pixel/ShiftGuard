@@ -1,0 +1,40 @@
+{
+  "ShiftGuardBinary": {
+    "test_accuracy": 0.819,
+    "macro_precision": 0.8190459426157366,
+    "macro_recall": 0.819,
+    "macro_f1": 0.8189934837654156,
+    "ms_per_image": 3.8365399837493896,
+    "total_params": 1901579,
+    "confusion_matrix": [
+      [
+        825,
+        175
+      ],
+      [
+        187,
+        813
+      ]
+    ],
+    "val_accuracy": 0.814
+  },
+  "SimpleCNN": {
+    "test_accuracy": 0.9545,
+    "macro_precision": 0.9545550011551398,
+    "macro_recall": 0.9544999999999999,
+    "macro_f1": 0.9544986235833635,
+    "ms_per_image": 3.7458795309066772,
+    "total_params": 2488066,
+    "confusion_matrix": [
+      [
+        960,
+        40
+      ],
+      [
+        51,
+        949
+      ]
+    ],
+    "val_accuracy": 0.964
+  }
+}

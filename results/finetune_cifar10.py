@@ -1,4 +1,4 @@
-"""
+r"""
 ================================================================================
 finetune_cifar10.py  --  ShiftGuard CIFAR-10 Binary Fine-Tuning Pipeline
 ================================================================================
@@ -178,12 +178,13 @@ class ShiftGuardBinary(nn.Module):
         }
 
 
-def build_model_from_checkpoint(checkpoint_path, device):
+def build_model_from_checkpoint(checkpoint_path, device, rank=8):
     """
     Construct ShiftGuardBinary, loading compatible weights from the original
     3-class checkpoint.  The task_head is intentionally excluded.
+    If rank != 8, adapters are also excluded because the checkpoint has rank-8 adapters.
     """
-    model = ShiftGuardBinary(n_classes=2).to(device)
+    model = ShiftGuardBinary(n_classes=2, rank=rank).to(device)
     if not Path(checkpoint_path).exists():
         print(f"[WARNING] Checkpoint not found at {checkpoint_path}. Using random init.")
         return model
@@ -191,14 +192,18 @@ def build_model_from_checkpoint(checkpoint_path, device):
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     sd   = ckpt["model_state_dict"]
 
-    # Exclude old 3-class task_head weights -- incompatible shape
-    compatible = {k: v for k, v in sd.items() if not k.startswith("task_head")}
+    if rank != 8:
+        print(f"[Checkpoint] lora_rank={rank} differs from checkpoint rank 8. Pretrained adapters excluded; will be randomly initialized.")
+        compatible = {k: v for k, v in sd.items() if not k.startswith("task_head") and not k.startswith("adapters")}
+    else:
+        compatible = {k: v for k, v in sd.items() if not k.startswith("task_head")}
+
     missing, unexpected = model.load_state_dict(compatible, strict=False)
 
     loaded  = len(compatible)
-    skipped = [k for k in sd if k.startswith("task_head")]
+    skipped = [k for k in sd if k not in compatible]
     print(f"[Checkpoint] Loaded {loaded} tensors from {Path(checkpoint_path).name}")
-    print(f"[Checkpoint] Excluded task_head keys (old 3-class): {skipped}")
+    print(f"[Checkpoint] Excluded keys: {skipped}")
     if missing:
         print(f"[Checkpoint] Keys fresh-initialised (not in checkpoint): {missing}")
     if unexpected:
@@ -341,13 +346,21 @@ def main(args):
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    out_checkpoint = Path(args.checkpoint_out) if args.checkpoint_out else BEST_CHECKPOINT
+    if not out_checkpoint.is_absolute():
+        out_checkpoint = PROJECT_ROOT / out_checkpoint
+
+    curves_name = f"{out_checkpoint.stem}_training_curves.png" if args.checkpoint_out else "shiftguard_training_curves.png"
+    curves_path = FIGURES_DIR / curves_name
+
     print("=" * 70)
     print("ShiftGuard CIFAR-10 Binary Fine-Tuning Pipeline")
     print("=" * 70)
     print(f"Device       : {device}")
     print(f"Random seed  : {args.seed}")
-    print(f"Checkpoint   : {ORIGINAL_CHECKPOINT}")
-    print(f"Output path  : {BEST_CHECKPOINT}")
+    print(f"LoRA rank    : {args.lora_rank}")
+    print(f"Checkpoint in: {ORIGINAL_CHECKPOINT}")
+    print(f"Output path  : {out_checkpoint}")
 
     # ------------------------------------------------------------------
     # A. Load CIFAR-10
@@ -393,167 +406,201 @@ def main(args):
     test_loader  = DataLoader(test_ds,  batch_size=args.batch_size,
                               shuffle=False, num_workers=0, pin_memory=False)
 
-    # ------------------------------------------------------------------
-    # B. Build model
-    # ------------------------------------------------------------------
-    print("\n[Model] Building ShiftGuardBinary (2-class head) ...")
-    model        = build_model_from_checkpoint(ORIGINAL_CHECKPOINT, device)
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"[Model] Total parameters: {total_params:,}")
+    if not args.train_baseline_only:
+        # ------------------------------------------------------------------
+        # B. Build model
+        # ------------------------------------------------------------------
+        print("\n[Model] Building ShiftGuardBinary (2-class head) ...", flush=True)
+        model        = build_model_from_checkpoint(ORIGINAL_CHECKPOINT, device, rank=args.lora_rank)
+        total_params = sum(p.numel() for p in model.parameters())
+        print(f"[Model] Total parameters: {total_params:,}", flush=True)
 
-    # ------------------------------------------------------------------
-    # C. Stage 1 - head only (backbone frozen)
-    # ------------------------------------------------------------------
-    print("\n" + "=" * 60)
-    print("STAGE 1: Head-only training (backbone + adapters frozen)")
-    print("=" * 60)
-    set_stage1_frozen(model)
+        # ------------------------------------------------------------------
+        # C. Stage 1 - head only (backbone frozen)
+        # ------------------------------------------------------------------
+        print("\n" + "=" * 60, flush=True)
+        print("STAGE 1: Head-only training (backbone + adapters frozen)", flush=True)
+        print("=" * 60, flush=True)
+        set_stage1_frozen(model)
 
-    opt_s1 = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()),
-        lr=args.lr_head, weight_decay=args.weight_decay,
-    )
-    sched_s1 = torch.optim.lr_scheduler.CosineAnnealingLR(opt_s1, T_max=args.epochs_stage1)
+        opt_s1 = torch.optim.AdamW(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=args.lr_head, weight_decay=args.weight_decay,
+        )
+        sched_s1 = torch.optim.lr_scheduler.CosineAnnealingLR(opt_s1, T_max=args.epochs_stage1)
 
-    train_accs, val_accs, train_losses, val_losses = [], [], [], []
-    best_val_acc = -1.0
-    patience_ctr = 0
+        train_accs, val_accs, train_losses, val_losses = [], [], [], []
+        best_val_acc = -1.0
+        patience_ctr = 0
 
-    for epoch in range(1, args.epochs_stage1 + 1):
-        tr_loss, tr_acc = train_one_epoch(model, train_loader, opt_s1, device)
-        vl_loss, vl_acc = evaluate_loader(model, val_loader, device)
-        sched_s1.step()
+        for epoch in range(1, args.epochs_stage1 + 1):
+            tr_loss, tr_acc = train_one_epoch(model, train_loader, opt_s1, device)
+            vl_loss, vl_acc = evaluate_loader(model, val_loader, device)
+            sched_s1.step()
 
-        train_accs.append(tr_acc)
-        val_accs.append(vl_acc)
-        train_losses.append(tr_loss)
-        val_losses.append(vl_loss)
+            train_accs.append(tr_acc)
+            val_accs.append(vl_acc)
+            train_losses.append(tr_loss)
+            val_losses.append(vl_loss)
 
-        improved = vl_acc > best_val_acc
-        if improved:
-            best_val_acc = vl_acc
-            patience_ctr = 0
-            torch.save({
-                "epoch": epoch, "stage": 1,
-                "model_state_dict": model.state_dict(),
-                "val_acc": best_val_acc,
-                "binary_classes": BINARY_CLASS_NAMES,
-                "seed": args.seed,
-                "cifar_automobile_label": CIFAR_AUTOMOBILE,
-                "cifar_truck_label": CIFAR_TRUCK,
-            }, BEST_CHECKPOINT)
-        else:
-            patience_ctr += 1
+            improved = vl_acc > best_val_acc
+            if improved:
+                best_val_acc = vl_acc
+                patience_ctr = 0
+                torch.save({
+                    "epoch": epoch, "stage": 1,
+                    "model_state_dict": model.state_dict(),
+                    "val_acc": best_val_acc,
+                    "binary_classes": BINARY_CLASS_NAMES,
+                    "seed": args.seed,
+                    "cifar_automobile_label": CIFAR_AUTOMOBILE,
+                    "cifar_truck_label": CIFAR_TRUCK,
+                    "lora_rank": args.lora_rank,
+                    "training_config": vars(args),
+                }, out_checkpoint)
+            else:
+                patience_ctr += 1
 
-        mk = "V" if improved else " "
-        print(
-            f"  [{mk}] Ep {epoch:3d}/{args.epochs_stage1}"
-            f"  loss={tr_loss:.4f}  acc={tr_acc * 100:.1f}%"
-            f"  |  val_loss={vl_loss:.4f}  val_acc={vl_acc * 100:.1f}%"
-            f"  (best={best_val_acc * 100:.1f}%)"
+            mk = "V" if improved else " "
+            print(
+                f"  [{mk}] Ep {epoch:3d}/{args.epochs_stage1}"
+                f"  loss={tr_loss:.4f}  acc={tr_acc * 100:.1f}%"
+                f"  |  val_loss={vl_loss:.4f}  val_acc={vl_acc * 100:.1f}%"
+                f"  (best={best_val_acc * 100:.1f}%)",
+                flush=True
+            )
+
+            if patience_ctr >= args.patience:
+                print(f"  [EarlyStop] No val improvement for {args.patience} epochs. Stopping Stage 1.", flush=True)
+                break
+
+        stage1_end = len(train_accs)
+
+        # ------------------------------------------------------------------
+        # D. Stage 2 - full fine-tuning
+        # ------------------------------------------------------------------
+        print("\n" + "=" * 60, flush=True)
+        print("STAGE 2: Full end-to-end fine-tuning (all layers unlocked)", flush=True)
+        print("=" * 60, flush=True)
+        set_stage2_unfrozen(model)
+
+        # Reload best Stage-1 weights before starting Stage 2
+        s1_ckpt = torch.load(out_checkpoint, map_location=device, weights_only=False)
+        model.load_state_dict(s1_ckpt["model_state_dict"])
+        print(f"[Stage 2] Loaded best Stage-1 checkpoint (val_acc={best_val_acc * 100:.2f}%)", flush=True)
+
+        opt_s2 = torch.optim.AdamW(
+            model.parameters(), lr=args.lr_finetune, weight_decay=args.weight_decay,
+        )
+        sched_s2 = torch.optim.lr_scheduler.CosineAnnealingLR(opt_s2, T_max=args.epochs_stage2)
+        patience_ctr = 0
+
+        for epoch in range(1, args.epochs_stage2 + 1):
+            tr_loss, tr_acc = train_one_epoch(model, train_loader, opt_s2, device)
+            vl_loss, vl_acc = evaluate_loader(model, val_loader, device)
+            sched_s2.step()
+
+            train_accs.append(tr_acc)
+            val_accs.append(vl_acc)
+            train_losses.append(tr_loss)
+            val_losses.append(vl_loss)
+
+            improved = vl_acc > best_val_acc
+            if improved:
+                best_val_acc = vl_acc
+                patience_ctr = 0
+                torch.save({
+                    "epoch": stage1_end + epoch, "stage": 2,
+                    "model_state_dict": model.state_dict(),
+                    "val_acc": best_val_acc,
+                    "binary_classes": BINARY_CLASS_NAMES,
+                    "seed": args.seed,
+                    "cifar_automobile_label": CIFAR_AUTOMOBILE,
+                    "cifar_truck_label": CIFAR_TRUCK,
+                    "lora_rank": args.lora_rank,
+                    "training_config": vars(args),
+                }, out_checkpoint)
+            else:
+                patience_ctr += 1
+
+            mk     = "V" if improved else " "
+            tot_ep = stage1_end + epoch
+            print(
+                f"  [{mk}] Ep {tot_ep:3d}  (S2 {epoch:3d}/{args.epochs_stage2})"
+                f"  loss={tr_loss:.4f}  acc={tr_acc * 100:.1f}%"
+                f"  |  val_loss={vl_loss:.4f}  val_acc={vl_acc * 100:.1f}%"
+                f"  (best={best_val_acc * 100:.1f}%)",
+                flush=True
+            )
+
+            if patience_ctr >= args.patience:
+                print(f"  [EarlyStop] No val improvement for {args.patience} epochs. Stopping Stage 2.", flush=True)
+                break
+
+        # ------------------------------------------------------------------
+        # E. Save training curves
+        # ------------------------------------------------------------------
+        save_training_curves(
+            train_accs, val_accs, train_losses, val_losses,
+            stage1_end=stage1_end,
+            title=f"ShiftGuard CIFAR-10 Binary Fine-Tuning ({out_checkpoint.stem})",
+            save_path=curves_path,
         )
 
-        if patience_ctr >= args.patience:
-            print(f"  [EarlyStop] No val improvement for {args.patience} epochs. Stopping Stage 1.")
-            break
-
-    stage1_end = len(train_accs)
-
-    # ------------------------------------------------------------------
-    # D. Stage 2 - full fine-tuning
-    # ------------------------------------------------------------------
-    print("\n" + "=" * 60)
-    print("STAGE 2: Full end-to-end fine-tuning (all layers unlocked)")
-    print("=" * 60)
-    set_stage2_unfrozen(model)
-
-    # Reload best Stage-1 weights before starting Stage 2
-    s1_ckpt = torch.load(BEST_CHECKPOINT, map_location=device, weights_only=False)
-    model.load_state_dict(s1_ckpt["model_state_dict"])
-    print(f"[Stage 2] Loaded best Stage-1 checkpoint (val_acc={best_val_acc * 100:.2f}%)")
-
-    opt_s2 = torch.optim.AdamW(
-        model.parameters(), lr=args.lr_finetune, weight_decay=args.weight_decay,
-    )
-    sched_s2 = torch.optim.lr_scheduler.CosineAnnealingLR(opt_s2, T_max=args.epochs_stage2)
-    patience_ctr = 0
-
-    for epoch in range(1, args.epochs_stage2 + 1):
-        tr_loss, tr_acc = train_one_epoch(model, train_loader, opt_s2, device)
-        vl_loss, vl_acc = evaluate_loader(model, val_loader, device)
-        sched_s2.step()
-
-        train_accs.append(tr_acc)
-        val_accs.append(vl_acc)
-        train_losses.append(tr_loss)
-        val_losses.append(vl_loss)
-
-        improved = vl_acc > best_val_acc
-        if improved:
-            best_val_acc = vl_acc
-            patience_ctr = 0
-            torch.save({
-                "epoch": stage1_end + epoch, "stage": 2,
-                "model_state_dict": model.state_dict(),
-                "val_acc": best_val_acc,
-                "binary_classes": BINARY_CLASS_NAMES,
-                "seed": args.seed,
-                "cifar_automobile_label": CIFAR_AUTOMOBILE,
-                "cifar_truck_label": CIFAR_TRUCK,
-            }, BEST_CHECKPOINT)
+        # ------------------------------------------------------------------
+        # F. Final test evaluation (controlled via --eval-test)
+        # ------------------------------------------------------------------
+        elapsed = time.time() - t_start
+        test_acc = float('nan')
+        if args.eval_test:
+            print("\n[Test] Loading best checkpoint for final test evaluation ...", flush=True)
+            best_ckpt = torch.load(out_checkpoint, map_location=device, weights_only=False)
+            model.load_state_dict(best_ckpt["model_state_dict"])
+            _, test_acc = evaluate_loader(model, test_loader, device)
+            print(f"[RESULT] Test accuracy       : {test_acc * 100:.2f}%", flush=True)
         else:
-            patience_ctr += 1
+            print("\n[Test] Test evaluation skipped to prevent test-set leakage during hyperparameter tuning.", flush=True)
+            print(f"       Evaluate when finalized using: python results/evaluate_cifar10_binary.py --checkpoint {out_checkpoint}", flush=True)
 
-        mk     = "V" if improved else " "
-        tot_ep = stage1_end + epoch
-        print(
-            f"  [{mk}] Ep {tot_ep:3d}  (S2 {epoch:3d}/{args.epochs_stage2})"
-            f"  loss={tr_loss:.4f}  acc={tr_acc * 100:.1f}%"
-            f"  |  val_loss={vl_loss:.4f}  val_acc={vl_acc * 100:.1f}%"
-            f"  (best={best_val_acc * 100:.1f}%)"
-        )
-
-        if patience_ctr >= args.patience:
-            print(f"  [EarlyStop] No val improvement for {args.patience} epochs. Stopping Stage 2.")
-            break
-
-    # ------------------------------------------------------------------
-    # E. Save training curves
-    # ------------------------------------------------------------------
-    save_training_curves(
-        train_accs, val_accs, train_losses, val_losses,
-        stage1_end=stage1_end,
-        title="ShiftGuard CIFAR-10 Binary Fine-Tuning",
-        save_path=FIGURES_DIR / "shiftguard_training_curves.png",
-    )
-
-    # ------------------------------------------------------------------
-    # F. Final test evaluation (best model, never used for selection)
-    # ------------------------------------------------------------------
-    print("\n[Test] Loading best checkpoint for final test evaluation ...")
-    best_ckpt = torch.load(BEST_CHECKPOINT, map_location=device, weights_only=False)
-    model.load_state_dict(best_ckpt["model_state_dict"])
-    _, test_acc = evaluate_loader(model, test_loader, device)
-    elapsed = time.time() - t_start
-
-    print("\n" + "=" * 60)
-    print(f"[RESULT] Best val accuracy   : {best_val_acc * 100:.2f}%")
-    print(f"[RESULT] Test accuracy       : {test_acc * 100:.2f}%")
-    print(f"[RESULT] Best checkpoint     : {BEST_CHECKPOINT}")
-    print(f"[RESULT] Total training time : {elapsed / 60:.1f} min")
-    print("=" * 60)
+        print("\n" + "=" * 60, flush=True)
+        print(f"[RESULT] Best val accuracy   : {best_val_acc * 100:.2f}%", flush=True)
+        if args.eval_test:
+            print(f"[RESULT] Test accuracy       : {test_acc * 100:.2f}%", flush=True)
+        print(f"[RESULT] Best checkpoint     : {out_checkpoint}", flush=True)
+        print(f"[RESULT] Total training time : {elapsed / 60:.1f} min", flush=True)
+        print("=" * 60, flush=True)
+    else:
+        print("\n[Mode] Running SimpleCNN Baseline Training ONLY (--train-baseline-only)", flush=True)
+        total_params = 1901579
+        best_val_acc = float('nan')
+        test_acc = float('nan')
+        if out_checkpoint.exists():
+            try:
+                ckpt_data = torch.load(out_checkpoint, map_location=device, weights_only=False)
+                best_val_acc = float(ckpt_data.get("val_acc", float("nan")))
+            except Exception:
+                pass
+        for j_path in [SCRIPT_DIR / "cifar10_exp1_evaluation.json", SCRIPT_DIR / "cifar10_binary_evaluation.json"]:
+            if j_path.exists():
+                try:
+                    with open(j_path, "r") as jf:
+                        jd = json.load(jf)
+                        test_acc = float(jd.get("metrics", {}).get("test_accuracy", float("nan")))
+                        break
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # G. Baseline CNN (optional, same split + conditions)
     # ------------------------------------------------------------------
-    if args.train_baseline:
+    if args.train_baseline or args.train_baseline_only:
         print("\n" + "=" * 60)
         print("BASELINE SimpleCNN Training (same conditions)")
         print("=" * 60)
         set_seed(args.seed)
         baseline      = SimpleCNN(n_classes=2).to(device)
         n_base_params = sum(p.numel() for p in baseline.parameters())
-        print(f"[Baseline] Parameters: {n_base_params:,}")
+        print(f"[Baseline] Parameters: {n_base_params:,}", flush=True)
 
         total_base_epochs = args.epochs_stage1 + args.epochs_stage2
         base_opt   = torch.optim.AdamW(baseline.parameters(), lr=1e-3, weight_decay=1e-4)
@@ -602,10 +649,10 @@ def main(args):
             print(
                 f"  [Baseline] Ep {epoch:3d}/{total_base_epochs}"
                 f"  train={tr_acc_b * 100:.1f}%  val={vl_acc_b * 100:.1f}%"
-                f"  (best={best_base_val * 100:.1f}%)"
+                f"  (best={best_base_val * 100:.1f}%)", flush=True
             )
             if base_pati_ctr >= args.patience:
-                print(f"  [Baseline EarlyStop] Stopped at epoch {epoch}.")
+                print(f"  [Baseline EarlyStop] Stopped at epoch {epoch}.", flush=True)
                 break
 
         # Baseline test evaluation
@@ -666,7 +713,7 @@ def main(args):
         print(f"[Saved] Comparison JSON -> {comp_path}")
 
     print("\n[Done] Fine-tuning complete.")
-    print(f"       Best checkpoint   : {BEST_CHECKPOINT}")
+    print(f"       Best checkpoint   : {out_checkpoint}")
     print("       Run evaluation  : python results/evaluate_cifar10_binary.py")
 
 
@@ -679,6 +726,10 @@ if __name__ == "__main__":
         description="ShiftGuard CIFAR-10 Binary Fine-Tuning Pipeline",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    p.add_argument("--checkpoint-out", type=str, default=None,
+                   help="Path or filename to save the best checkpoint (protects default checkpoint if specified)")
+    p.add_argument("--lora-rank",      type=int,   default=8,
+                   help="LoRA adapter rank (must be 8 to load base checkpoint adapters; other values re-init adapters)")
     p.add_argument("--epochs-stage1",  type=int,   default=8,
                    help="Head-only training epochs (backbone frozen)")
     p.add_argument("--epochs-stage2",  type=int,   default=20,
@@ -695,9 +746,13 @@ if __name__ == "__main__":
                    help="Early stopping patience (epochs without val improvement)")
     p.add_argument("--seed",           type=int,   default=42,
                    help="Random seed for reproducibility")
-    p.add_argument("--train-baseline", action="store_true",      default=True,
+    p.add_argument("--train-baseline", action="store_true",      default=False,
                    help="Also train the SimpleCNN baseline for comparison")
     p.add_argument("--no-baseline",    dest="train_baseline",    action="store_false",
                    help="Skip training the SimpleCNN baseline")
+    p.add_argument("--train-baseline-only", action="store_true", default=False,
+                   help="Train ONLY the SimpleCNN baseline without fine-tuning ShiftGuard")
+    p.add_argument("--eval-test",      action="store_true",      default=False,
+                   help="Evaluate on the official held-out test set at the end")
     args = p.parse_args()
     main(args)

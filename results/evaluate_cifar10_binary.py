@@ -1,4 +1,4 @@
-"""
+r"""
 ================================================================================
 evaluate_cifar10_binary.py  --  ShiftGuard CIFAR-10 Binary Evaluation
 ================================================================================
@@ -24,6 +24,7 @@ Usage
 ================================================================================
 """
 
+import argparse
 import json
 import pickle
 import sys
@@ -220,11 +221,49 @@ def save_sample_predictions(images, true_lbls, pred_lbls, confidences,
 # MAIN EVALUATION
 # ===========================================================================
 
-def main():
+def parse_args():
+    p = argparse.ArgumentParser(description="ShiftGuard CIFAR-10 Binary Evaluation")
+    p.add_argument("--checkpoint", type=str, default=str(BEST_CHECKPOINT),
+                   help="Path to model checkpoint to evaluate")
+    p.add_argument("--output-json", type=str, default=str(RESULTS_JSON),
+                   help="Path to output JSON metrics")
+    p.add_argument("--output-txt", type=str, default=str(RESULTS_TXT),
+                   help="Path to output text report")
+    p.add_argument("--output-cm", type=str, default=str(CONFUSION_PNG),
+                   help="Path to output confusion matrix PNG")
+    p.add_argument("--output-samples", type=str, default=str(FIGURES_DIR / "shiftguard_sample_predictions.png"),
+                   help="Path to sample predictions PNG")
+    return p.parse_args()
+
+
+def main(args=None):
+    if args is None:
+        args = parse_args()
+
+    checkpoint_path = Path(args.checkpoint)
+    if not checkpoint_path.is_absolute():
+        checkpoint_path = PROJECT_ROOT / checkpoint_path
+
+    results_json = Path(args.output_json)
+    if not results_json.is_absolute():
+        results_json = PROJECT_ROOT / results_json
+
+    results_txt = Path(args.output_txt)
+    if not results_txt.is_absolute():
+        results_txt = PROJECT_ROOT / results_txt
+
+    confusion_png = Path(args.output_cm)
+    if not confusion_png.is_absolute():
+        confusion_png = PROJECT_ROOT / confusion_png
+
+    sample_png = Path(args.output_samples)
+    if not sample_png.is_absolute():
+        sample_png = PROJECT_ROOT / sample_png
+
     # ------------------------------------------------------------------ #
     # Checks                                                               #
     # ------------------------------------------------------------------ #
-    if not BEST_CHECKPOINT.exists():
+    if not checkpoint_path.exists():
         raise FileNotFoundError(
             f"Best checkpoint not found: {BEST_CHECKPOINT}\n"
             "Please run:  python results/finetune_cifar10.py  first."
@@ -240,13 +279,13 @@ def main():
     print("ShiftGuard CIFAR-10 Binary Evaluation")
     print("=" * 70)
     print(f"Device     : {device}")
-    print(f"Checkpoint : {BEST_CHECKPOINT}")
+    print(f"Checkpoint : {checkpoint_path}")
     print(f"Test data  : {CIFAR_TEST_PATH}")
 
     # ------------------------------------------------------------------ #
     # Load model                                                           #
     # ------------------------------------------------------------------ #
-    model, ckpt_meta = load_finetuned_model(BEST_CHECKPOINT, device)
+    model, ckpt_meta = load_finetuned_model(checkpoint_path, device)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"[Model] Total parameters: {total_params:,}")
 
@@ -374,12 +413,12 @@ def main():
     save_confusion_matrix(
         cm, BINARY_CLASS_NAMES,
         title=f"ShiftGuard CIFAR-10 Binary Confusion Matrix\n(Acc={acc*100:.2f}%)",
-        save_path=CONFUSION_PNG,
+        save_path=confusion_png,
     )
     save_sample_predictions(
         test_imgs, y_true, y_pred, confs,
         n_show=8,
-        save_path=FIGURES_DIR / "shiftguard_sample_predictions.png",
+        save_path=sample_png,
     )
 
     # ------------------------------------------------------------------ #
@@ -394,7 +433,7 @@ def main():
         "cifar10_automobile_label": CIFAR_AUTOMOBILE,
         "cifar10_truck_label": CIFAR_TRUCK,
         "model": "ShiftGuardBinary (MiniViT + ShiftAnalyzer + Router + LoRA Adapters + 2-class head)",
-        "checkpoint": str(BEST_CHECKPOINT),
+        "checkpoint": str(checkpoint_path),
         "val_accuracy_at_selection": float(ckpt_meta.get("val_acc", float("nan"))),
         "metrics": {
             "test_accuracy": float(acc),
@@ -423,16 +462,16 @@ def main():
         "target_note": target_note,
     }
 
-    with open(RESULTS_JSON, "w") as f:
+    with open(results_json, "w") as f:
         json.dump(results, f, indent=2)
-    print(f"[Saved] JSON report  -> {RESULTS_JSON}")
+    print(f"[Saved] JSON report  -> {results_json}")
 
     # Human-readable text report
     txt_lines = [
         "=" * 70,
         "ShiftGuard CIFAR-10 Binary Evaluation Report",
         "=" * 70,
-        f"Checkpoint   : {BEST_CHECKPOINT}",
+        f"Checkpoint   : {checkpoint_path}",
         f"Val acc (selection criterion, NOT test): {ckpt_meta.get('val_acc', float('nan'))*100:.2f}%",
         "",
         f"Test accuracy        : {acc * 100:.2f}%",
@@ -451,10 +490,10 @@ def main():
         f"Target assessment: {target_note}",
         "=" * 70,
     ]
-    with open(RESULTS_TXT, "w", encoding="utf-8") as f:
+    with open(results_txt, "w", encoding="utf-8") as f:
         f.write("\n".join(txt_lines))
-    print(f"[Saved] Text report  -> {RESULTS_TXT}")
-    print(f"[Saved] Confusion PNG-> {CONFUSION_PNG}")
+    print(f"[Saved] Text report  -> {results_txt}")
+    print(f"[Saved] Confusion PNG-> {confusion_png}")
 
 
 if __name__ == "__main__":
