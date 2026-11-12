@@ -4,7 +4,7 @@
     "macro_precision": 0.8190459426157366,
     "macro_recall": 0.819,
     "macro_f1": 0.8189934837654156,
-    "ms_per_image": 3.8365399837493896,
+    "ms_per_image": 3.3006917238235474,
     "total_params": 1901579,
     "confusion_matrix": [
       [
@@ -23,7 +23,7 @@
     "macro_precision": 0.9545550011551398,
     "macro_recall": 0.9544999999999999,
     "macro_f1": 0.9544986235833635,
-    "ms_per_image": 3.7458795309066772,
+    "ms_per_image": 2.500410556793213,
     "total_params": 2488066,
     "confusion_matrix": [
       [

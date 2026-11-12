@@ -1,0 +1,103 @@
+{
+  "experiment": "Custom CIFAR-10 automobile/truck corruption benchmark",
+  "official_cifar10_c": false,
+  "test_images": 2000,
+  "class_counts": {
+    "automobile": 1000,
+    "truck": 1000
+  },
+  "severity": 3,
+  "seed": 42,
+  "results": [
+    {
+      "corruption": "clean",
+      "severity": 0,
+      "model": "ShiftGuard",
+      "accuracy": 0.819,
+      "macro_f1": 0.8189934837654156,
+      "ece": 0.026314675241708767,
+      "n_images": 2000
+    },
+    {
+      "corruption": "clean",
+      "severity": 0,
+      "model": "SimpleCNN",
+      "accuracy": 0.9545,
+      "macro_f1": 0.9544986235833635,
+      "ece": 0.018755591958761253,
+      "n_images": 2000
+    },
+    {
+      "corruption": "gaussian_noise",
+      "severity": 3,
+      "model": "ShiftGuard",
+      "accuracy": 0.794,
+      "macro_f1": 0.7938909683222424,
+      "ece": 0.021323150604963294,
+      "n_images": 2000
+    },
+    {
+      "corruption": "gaussian_noise",
+      "severity": 3,
+      "model": "SimpleCNN",
+      "accuracy": 0.9055,
+      "macro_f1": 0.9050279652442552,
+      "ece": 0.0336333053410053,
+      "n_images": 2000
+    },
+    {
+      "corruption": "defocus_blur",
+      "severity": 3,
+      "model": "ShiftGuard",
+      "accuracy": 0.771,
+      "macro_f1": 0.770941360988413,
+      "ece": 0.06030089482665063,
+      "n_images": 2000
+    },
+    {
+      "corruption": "defocus_blur",
+      "severity": 3,
+      "model": "SimpleCNN",
+      "accuracy": 0.7605,
+      "macro_f1": 0.7594037834885196,
+      "ece": 0.0547501944601536,
+      "n_images": 2000
+    },
+    {
+      "corruption": "brightness",
+      "severity": 3,
+      "model": "ShiftGuard",
+      "accuracy": 0.814,
+      "macro_f1": 0.8139774912764444,
+      "ece": 0.028585628300905247,
+      "n_images": 2000
+    },
+    {
+      "corruption": "brightness",
+      "severity": 3,
+      "model": "SimpleCNN",
+      "accuracy": 0.9535,
+      "macro_f1": 0.9534973842278629,
+      "ece": 0.016857224881648987,
+      "n_images": 2000
+    },
+    {
+      "corruption": "jpeg_compression",
+      "severity": 3,
+      "model": "ShiftGuard",
+      "accuracy": 0.798,
+      "macro_f1": 0.797883580942623,
+      "ece": 0.038064214587211605,
+      "n_images": 2000
+    },
+    {
+      "corruption": "jpeg_compression",
+      "severity": 3,
+      "model": "SimpleCNN",
+      "accuracy": 0.9065,
+      "macro_f1": 0.9062885635715583,
+      "ece": 0.04480535438656801,
+      "n_images": 2000
+    }
+  ]
+}
